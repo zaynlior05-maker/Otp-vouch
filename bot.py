@@ -317,9 +317,17 @@ class BotSender:
         logger.error("Giving up on %s after repeated failures", method)
         return {"ok": False}
 
-    async def send_message(self, text: str, chat_id: Optional[str] = None) -> bool:
+    async def send_message(self, text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = None) -> bool:
         payload = {"chat_id": chat_id or self.target_chat, "text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         data = await self._post("sendMessage", json=payload)
+        if not data.get("ok") and parse_mode:
+            # Fall back to plain text if the formatted markup was invalid,
+            # so a formatting glitch never silently drops the whole message.
+            logger.warning("sendMessage with parse_mode=%s failed, retrying as plain text", parse_mode)
+            payload.pop("parse_mode", None)
+            data = await self._post("sendMessage", json=payload)
         return bool(data.get("ok"))
 
     async def send_sticker(self, sticker_bytes: bytes, filename: str, chat_id: Optional[str] = None) -> bool:
@@ -339,10 +347,14 @@ class BotSender:
         else:
             logger.warning("Could not clear webhook: %s", data)
 
-    async def get_updates(self, timeout: int = 25) -> list[dict]:
+    async def get_updates(self, timeout: int = 25) -> Optional[list[dict]]:
+        """Returns a list of updates on success (possibly empty), or None
+        if the API call itself failed (e.g. bad token, network issue)."""
         payload = {"offset": self._update_offset, "timeout": timeout, "allowed_updates": ["message"]}
         data = await self._post("getUpdates", json=payload, timeout=aiohttp.ClientTimeout(total=timeout + 10))
-        updates = data.get("result", []) if data.get("ok") else []
+        if not data.get("ok"):
+            return None
+        updates = data.get("result", [])
         if updates:
             self._update_offset = updates[-1]["update_id"] + 1
         return updates
@@ -474,10 +486,17 @@ class MirrorListener:
         )
 
     async def _handle_text(self, message) -> None:
-        cleaned = self._replacer.apply(message.raw_text or "")
+        # message.text (unlike message.raw_text) preserves formatting —
+        # bold, italics, and crucially hyperlinked/text-link entities —
+        # as Markdown syntax (e.g. a hyperlinked "RDX OTP BOT" becomes
+        # "[RDX OTP BOT](https://t.me/...)"). Our replacements then run
+        # over that markdown, including any URLs hidden inside link
+        # syntax, and we send with parse_mode=Markdown so it renders as
+        # clickable text in the destination chat.
+        cleaned = self._replacer.apply(message.text or message.raw_text or "")
         if not cleaned.strip():
             return
-        ok = await self._sender.send_message(cleaned)
+        ok = await self._sender.send_message(cleaned, parse_mode="Markdown")
         if ok:
             self._stats.messages_mirrored += 1
             logger.info("Message mirrored (msg id=%s)", message.id)
@@ -567,6 +586,13 @@ class MirrorApp:
             except Exception:  # noqa: BLE001
                 logger.exception("Error polling admin commands; retrying shortly")
                 await asyncio.sleep(5)
+                continue
+
+            if updates is None:
+                # The API call failed (bad token, auth error, etc.) — the
+                # error was already logged inside _post. Back off instead
+                # of retrying dozens of times per second.
+                await asyncio.sleep(10)
                 continue
 
             for update in updates:
