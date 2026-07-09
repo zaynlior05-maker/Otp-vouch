@@ -171,6 +171,31 @@ def _strip_markup(text: str) -> str:
     return text
 
 
+_TAG_OPEN_CLOSE_PATTERN = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*>")
+
+
+def _close_dangling_tags(prefix: str) -> str:
+    """If `prefix` was cut off mid-way through the source's HTML (e.g. a
+    <b> tag opened but never closed because we truncated before its
+    closing </b>), append the closing tags needed to make it valid HTML
+    again. Without this, Telegram rejects the whole message's formatting
+    and silently falls back to a stripped, link-less plain-text version."""
+    stack: list[str] = []
+    for m in _TAG_OPEN_CLOSE_PATTERN.finditer(prefix):
+        is_closing, name = m.group(1), m.group(2).lower()
+        if is_closing:
+            if name in stack:
+                # Pop the most recent matching open tag (handles the
+                # common well-formed case; tolerant of odd nesting too).
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i] == name:
+                        del stack[i]
+                        break
+        else:
+            stack.append(name)
+    return prefix + "".join(f"</{tag}>" for tag in reversed(stack))
+
+
 class ReplacementEngine:
     """Holds username/link/text replacement rules, loaded from env vars."""
 
@@ -204,10 +229,16 @@ class ReplacementEngine:
         # "Powered by") to the end of the message is replaced wholesale
         # with a fixed footer built from your own bot/channel links —
         # this sidesteps needing to know the source's exact hidden URLs.
+        #
+        # Defaults are hardcoded below so this works immediately without
+        # relying on Railway env vars being set. If you ever want to
+        # change them without editing code, set the corresponding env
+        # var (FOOTER_BOT_URL / FOOTER_CHANNEL_URL / FOOTER_BRAND_TEXT)
+        # and it will override the hardcoded default.
         self._footer_marker = os.getenv("FOOTER_MARKER", "Powered by").strip()
-        bot_url = os.getenv("FOOTER_BOT_URL", "").strip()
-        channel_url = os.getenv("FOOTER_CHANNEL_URL", "").strip()
-        brand_text = os.getenv("FOOTER_BRAND_TEXT", "").strip()
+        bot_url = os.getenv("FOOTER_BOT_URL", "https://t.me/HeisenbergOtpBot").strip()
+        channel_url = os.getenv("FOOTER_CHANNEL_URL", "https://t.me/HeisenOTP").strip()
+        brand_text = os.getenv("FOOTER_BRAND_TEXT", "#Heisen").strip()
         bot_label = os.getenv("FOOTER_BOT_LABEL", "BOT").strip()
         channel_label = os.getenv("FOOTER_CHANNEL_LABEL", "CHANNEL").strip()
 
@@ -265,7 +296,8 @@ class ReplacementEngine:
         idx = text.find(self._footer_marker)
         if idx == -1:
             return text
-        return text[:idx] + self._footer_html
+        prefix = _close_dangling_tags(text[:idx])
+        return prefix + self._footer_html
 
 
 # ============================================================================
