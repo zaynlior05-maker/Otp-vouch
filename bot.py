@@ -317,16 +317,31 @@ class BotSender:
         logger.error("Giving up on %s after repeated failures", method)
         return {"ok": False}
 
-    async def send_message(self, text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = None) -> bool:
+    async def send_message(
+        self,
+        text: str,
+        chat_id: Optional[str] = None,
+        parse_mode: Optional[str] = None,
+        disable_preview: bool = False,
+    ) -> bool:
         payload = {"chat_id": chat_id or self.target_chat, "text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
+        if disable_preview:
+            # Both are set for compatibility across Bot API versions:
+            # link_preview_options is the current field, disable_web_page_preview
+            # is the older one some clients/relays still expect.
+            payload["link_preview_options"] = {"is_disabled": True}
+            payload["disable_web_page_preview"] = True
         data = await self._post("sendMessage", json=payload)
         if not data.get("ok") and parse_mode:
             # Fall back to plain text if the formatted markup was invalid,
             # so a formatting glitch never silently drops the whole message.
+            # Strip any tags/markdown syntax first so the fallback doesn't
+            # show raw <b>, **, or [text](url) to the reader.
             logger.warning("sendMessage with parse_mode=%s failed, retrying as plain text", parse_mode)
             payload.pop("parse_mode", None)
+            payload["text"] = _strip_markup(text)
             data = await self._post("sendMessage", json=payload)
         return bool(data.get("ok"))
 
@@ -377,6 +392,11 @@ class MirrorListener:
         stats: Stats,
     ):
         self._client = TelegramClient(StringSession(session_string), api_id, api_hash)
+        # Use HTML as the formatting flavor: message.text will then return
+        # e.g. <b>bold</b> and <a href="...">text</a>, which is exactly
+        # what Telegram Bot API's parse_mode=HTML expects — avoiding the
+        # markdown-flavor mismatches that show up as literal ** or _ signs.
+        self._client.parse_mode = "html"
         self.source_channel = source_channel
         self._sender = sender
         self._replacer = replacer
@@ -486,17 +506,16 @@ class MirrorListener:
         )
 
     async def _handle_text(self, message) -> None:
-        # message.text (unlike message.raw_text) preserves formatting —
-        # bold, italics, and crucially hyperlinked/text-link entities —
-        # as Markdown syntax (e.g. a hyperlinked "RDX OTP BOT" becomes
-        # "[RDX OTP BOT](https://t.me/...)"). Our replacements then run
-        # over that markdown, including any URLs hidden inside link
-        # syntax, and we send with parse_mode=Markdown so it renders as
-        # clickable text in the destination chat.
+        # message.text (with client.parse_mode = "html") returns the
+        # message as HTML: <b>, <i>, and crucially <a href="..."> for any
+        # hyperlinked/text-link entities. Our replacements run over that
+        # HTML — including URLs inside href="..." — and we send with
+        # parse_mode=HTML, which Telegram's Bot API parses natively with
+        # no ambiguity (unlike legacy Markdown flavors).
         cleaned = self._replacer.apply(message.text or message.raw_text or "")
         if not cleaned.strip():
             return
-        ok = await self._sender.send_message(cleaned, parse_mode="Markdown")
+        ok = await self._sender.send_message(cleaned, parse_mode="HTML", disable_preview=True)
         if ok:
             self._stats.messages_mirrored += 1
             logger.info("Message mirrored (msg id=%s)", message.id)
