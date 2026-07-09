@@ -139,9 +139,13 @@ def configure_logging(level_name: str) -> None:
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    if level > logging.DEBUG:
-        logging.getLogger("telethon").setLevel(logging.WARNING)
-        logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    # Telethon's own internals are extremely chatty at DEBUG (every network
+    # packet, ping/pong, etc). Keep them quiet regardless of our own
+    # LOG_LEVEL so that setting LOG_LEVEL=DEBUG shows *our* debug lines
+    # (like the raw source message dump) without being buried under
+    # thousands of low-level network log lines.
+    logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
 
 
 # ============================================================================
@@ -689,4 +693,3 @@ if __name__ == "__main__":
 #   with TelegramClient(StringSession(), api_id, api_hash) as client:
 #       print(client.session.save())
 # ============================================================================
- 
