@@ -1,0 +1,29 @@
+{
+    "usernames": {
+        "@CoinTelegraph": "@YourChannel",
+        "@HeisenCEO": "@YourChannel",
+        "@HeisenUpdates": "@YourChannel",
+        "@CryptoNews": "@YourChannel"
+    },
+
+    "links": {
+        "https://t.me/CoinTelegraph": "https://t.me/YourChannel",
+        "https://t.me/HeisenCEO": "https://t.me/YourChannel",
+        "https://t.me/HeisenUpdates": "https://t.me/YourChannel",
+
+        "http://t.me/CoinTelegraph": "https://t.me/YourChannel",
+        "http://t.me/HeisenCEO": "https://t.me/YourChannel",
+
+        "t.me/CoinTelegraph": "t.me/YourChannel",
+        "t.me/HeisenCEO": "t.me/YourChannel",
+        "t.me/HeisenUpdates": "t.me/YourChannel",
+
+        "telegram.me/CoinTelegraph": "t.me/YourChannel",
+        "telegram.me/HeisenCEO": "t.me/YourChannel"
+    },
+
+    "text": {
+        "CoinTelegraph": "Your Brand",
+        "Heisen": "Your Brand"
+    }
+}
