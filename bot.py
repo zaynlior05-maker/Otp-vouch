@@ -178,6 +178,8 @@ class ReplacementEngine:
         self._usernames: dict[str, str] = {}
         self._links: dict[str, str] = {}
         self._text: dict[str, str] = {}
+        self._footer_marker: str = ""
+        self._footer_html: str = ""
         self.reload()
 
     def reload(self) -> None:
@@ -198,9 +200,29 @@ class ReplacementEngine:
         self._links = {k.strip().lstrip("@"): v.strip().lstrip("@") for k, v in links.items()}
         self._text = dict(text)
 
+        # Optional footer override: everything from FOOTER_MARKER (e.g.
+        # "Powered by") to the end of the message is replaced wholesale
+        # with a fixed footer built from your own bot/channel links —
+        # this sidesteps needing to know the source's exact hidden URLs.
+        self._footer_marker = os.getenv("FOOTER_MARKER", "Powered by").strip()
+        bot_url = os.getenv("FOOTER_BOT_URL", "").strip()
+        channel_url = os.getenv("FOOTER_CHANNEL_URL", "").strip()
+        brand_text = os.getenv("FOOTER_BRAND_TEXT", "").strip()
+        bot_label = os.getenv("FOOTER_BOT_LABEL", "BOT").strip()
+        channel_label = os.getenv("FOOTER_CHANNEL_LABEL", "CHANNEL").strip()
+
+        if bot_url and channel_url and brand_text:
+            self._footer_html = (
+                f"Powered by {brand_text}\n"
+                f'<a href="{bot_url}">{bot_label}</a> | <a href="{channel_url}">{channel_label}</a>'
+            )
+        else:
+            self._footer_html = ""
+
         logger.info(
-            "Replacement rules loaded: %d usernames, %d links, %d text rules",
+            "Replacement rules loaded: %d usernames, %d links, %d text rules, footer override %s",
             len(self._usernames), len(self._links), len(self._text),
+            "enabled" if self._footer_html else "disabled",
         )
 
     @staticmethod
@@ -214,6 +236,7 @@ class ReplacementEngine:
         text = self._replace_links(text)
         text = self._replace_usernames(text)
         text = self._replace_text(text)
+        text = self._replace_footer(text)
         return text
 
     def _replace_links(self, text: str) -> str:
@@ -235,6 +258,14 @@ class ReplacementEngine:
             if source:
                 text = text.replace(source, target)
         return text
+
+    def _replace_footer(self, text: str) -> str:
+        if not self._footer_html or not self._footer_marker:
+            return text
+        idx = text.find(self._footer_marker)
+        if idx == -1:
+            return text
+        return text[:idx] + self._footer_html
 
 
 # ============================================================================
