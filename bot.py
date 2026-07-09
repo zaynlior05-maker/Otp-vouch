@@ -329,6 +329,16 @@ class BotSender:
         data = await self._post("sendSticker", data=form)
         return bool(data.get("ok"))
 
+    async def delete_webhook(self) -> None:
+        """Clear any previously-set webhook so getUpdates polling doesn't
+        conflict with it (fixes 409 'terminated by other getUpdates request'
+        errors caused by a leftover webhook from earlier testing)."""
+        data = await self._post("deleteWebhook", json={"drop_pending_updates": False})
+        if data.get("ok"):
+            logger.info("Webhook cleared (if any was set)")
+        else:
+            logger.warning("Could not clear webhook: %s", data)
+
     async def get_updates(self, timeout: int = 25) -> list[dict]:
         payload = {"offset": self._update_offset, "timeout": timeout, "allowed_updates": ["message"]}
         data = await self._post("getUpdates", json=payload, timeout=aiohttp.ClientTimeout(total=timeout + 10))
@@ -365,12 +375,16 @@ class MirrorListener:
         self._client.add_event_handler(self._on_new_message, events.NewMessage(chats=self.source_channel))
 
         backoff = 5
+        first_connect = True
         while True:
             try:
                 await self._client.start()
                 self._stats.connected = True
                 logger.info("Connected to Telegram. Monitoring source channel: %s", self.source_channel)
                 backoff = 5
+                if first_connect:
+                    first_connect = False
+                    await self._send_startup_confirmation()
                 await self._client.run_until_disconnected()
             except (ConnectionError, OSError) as exc:
                 logger.warning("Telegram connection lost (%s). Reconnecting in %ss", exc, backoff)
@@ -381,6 +395,40 @@ class MirrorListener:
 
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+    async def _send_startup_confirmation(self) -> None:
+        """On first connect, fetch the most recent message from the source
+        channel and mirror it right away, so you get immediate visible
+        proof the bot is deployed and working — without waiting for a new
+        post to arrive."""
+        try:
+            messages = await self._client.get_messages(self.source_channel, limit=1)
+            if not messages:
+                logger.info("Source channel has no messages yet; skipping startup confirmation")
+                return
+
+            message = messages[0]
+            chat_id = message.chat_id or 0
+
+            if message.sticker is not None:
+                logger.info("Mirroring most recent message (sticker) as startup confirmation")
+                await self._handle_sticker(message)
+            elif self._is_ignored_media(message):
+                logger.info("Most recent source message is unsupported media; sending a text notice instead")
+                await self._sender.send_message(
+                    "✅ Bot deployed and connected. The most recent source message "
+                    "is an unsupported media type, so it wasn't mirrored, but the "
+                    "listener is live and watching for new messages."
+                )
+            elif message.text:
+                logger.info("Mirroring most recent message as startup confirmation")
+                await self._handle_text(message)
+            else:
+                await self._sender.send_message("✅ Bot deployed and connected. Listening for new messages now.")
+
+            self._dedupe.mark_mirrored(chat_id, message.id)
+        except Exception:  # noqa: BLE001 - startup confirmation must never crash the app
+            logger.exception("Failed to send startup confirmation message")
 
     async def _on_new_message(self, event: events.NewMessage.Event) -> None:
         message = event.message
@@ -484,6 +532,7 @@ class MirrorApp:
     async def run(self) -> None:
         logger.info("Application started")
         await self.sender.start()
+        await self.sender.delete_webhook()
 
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -581,4 +630,3 @@ if __name__ == "__main__":
 #   with TelegramClient(StringSession(), api_id, api_hash) as client:
 #       print(client.session.save())
 # ============================================================================
- 
