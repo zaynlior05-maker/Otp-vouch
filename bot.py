@@ -153,6 +153,18 @@ _LINK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _USERNAME_PATTERN = re.compile(r"@([A-Za-z0-9_]{4,32})")
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_MD_LINK_PATTERN = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+
+
+def _strip_markup(text: str) -> str:
+    """Best-effort plain-text fallback: drop HTML tags and collapse
+    markdown-style [text](url) links down to 'text (url)', used only if
+    a formatted send ever fails to parse."""
+    text = _MD_LINK_PATTERN.sub(r"\1 (\2)", text)
+    text = _HTML_TAG_PATTERN.sub("", text)
+    text = text.replace("**", "").replace("__", "")
+    return text
 
 
 class ReplacementEngine:
@@ -512,7 +524,9 @@ class MirrorListener:
         # HTML — including URLs inside href="..." — and we send with
         # parse_mode=HTML, which Telegram's Bot API parses natively with
         # no ambiguity (unlike legacy Markdown flavors).
-        cleaned = self._replacer.apply(message.text or message.raw_text or "")
+        raw = message.text or message.raw_text or ""
+        logger.debug("Raw source message (formatted): %s", raw)
+        cleaned = self._replacer.apply(raw)
         if not cleaned.strip():
             return
         ok = await self._sender.send_message(cleaned, parse_mode="HTML", disable_preview=True)
