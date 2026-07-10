@@ -110,6 +110,7 @@ class Settings:
     target_chat: str
     log_level: str
     admin_chat_id: str
+    admin_commands_enabled: bool
 
 
 def load_settings() -> Settings:
@@ -129,6 +130,14 @@ def load_settings() -> Settings:
         target_chat=_get_env("TARGET_CHAT"),
         log_level=_get_env("LOG_LEVEL", required=False, default="INFO"),
         admin_chat_id=_get_env("ADMIN_CHAT_ID", required=False, default=""),
+        # Set ADMIN_COMMANDS_ENABLED=false in Railway to stop polling
+        # getUpdates entirely (disables /status and /reload) — useful if
+        # another process is fighting over the same BOT_TOKEN and causing
+        # persistent 409 Conflict errors. Mirroring itself does not need
+        # getUpdates at all, only sendMessage/sendSticker.
+        admin_commands_enabled=_get_env(
+            "ADMIN_COMMANDS_ENABLED", required=False, default="true"
+        ).strip().lower() not in ("false", "0", "no"),
     )
 
 
@@ -235,12 +244,12 @@ class ReplacementEngine:
         # change them without editing code, set the corresponding env
         # var (FOOTER_BOT_URL / FOOTER_CHANNEL_URL / FOOTER_BRAND_TEXT)
         # and it will override the hardcoded default.
-        self._footer_marker = os.getenv("FOOTER_MARKER", "Powered by").strip()
-        bot_url = os.getenv("FOOTER_BOT_URL", "https://t.me/HeisenbergOtpBot").strip()
-        channel_url = os.getenv("FOOTER_CHANNEL_URL", "https://t.me/HeisenOTP").strip()
-        brand_text = os.getenv("FOOTER_BRAND_TEXT", "#Heisen").strip()
-        bot_label = os.getenv("FOOTER_BOT_LABEL", "BOT").strip()
-        channel_label = os.getenv("FOOTER_CHANNEL_LABEL", "CHANNEL").strip()
+        self._footer_marker = (os.getenv("FOOTER_MARKER") or "Powered by").strip()
+        bot_url = (os.getenv("FOOTER_BOT_URL") or "https://t.me/HeisenbergOtpBot").strip()
+        channel_url = (os.getenv("FOOTER_CHANNEL_URL") or "https://t.me/HeisenOTP").strip()
+        brand_text = (os.getenv("FOOTER_BRAND_TEXT") or "#Heisen").strip()
+        bot_label = (os.getenv("FOOTER_BOT_LABEL") or "BOT").strip()
+        channel_label = (os.getenv("FOOTER_CHANNEL_LABEL") or "CHANNEL").strip()
 
         if bot_url and channel_url and brand_text:
             self._footer_html = (
@@ -662,9 +671,15 @@ class MirrorApp:
 
         tasks = [
             asyncio.create_task(self.listener.start(), name="listener"),
-            asyncio.create_task(self._admin_command_loop(), name="admin_commands"),
             asyncio.create_task(self._shutdown_event.wait(), name="shutdown_waiter"),
         ]
+        if self.settings.admin_commands_enabled:
+            tasks.append(asyncio.create_task(self._admin_command_loop(), name="admin_commands"))
+        else:
+            logger.info(
+                "Admin commands (/status, /reload) disabled via ADMIN_COMMANDS_ENABLED=false "
+                "— getUpdates will not be polled at all."
+            )
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
